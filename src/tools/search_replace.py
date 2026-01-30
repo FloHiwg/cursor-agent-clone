@@ -13,8 +13,10 @@ def search_replace_tool(
     workspace_root: str = ".",
     replace_all: bool = False,
 ) -> str:
-    """Replace old_string with new_string in the given file (path relative to workspace_root).
-    Returns success/failure and whether the patch was applied (for edit accuracy metrics).
+    """Replace old_string with new_string in the given file.
+    file_path is relative to workspace_root. old_string must match the file content exactly
+    (including newlines and spaces); use read_file first to get the exact text to replace.
+    Returns success/failure and whether the patch was applied.
     """
     root = Path(workspace_root).resolve()
     full_path = (root / file_path).resolve()

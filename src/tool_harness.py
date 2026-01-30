@@ -6,8 +6,10 @@ from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolNode
 
 from src.tools.grep import grep_tool
+from src.tools.read_file import read_file_tool
 from src.tools.shell import run_shell_tool
 from src.tools.search_replace import search_replace_tool
+from src.tools.write_file import write_file_tool
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
@@ -31,7 +33,9 @@ def get_tools(workspace_root: str) -> list["BaseTool"]:
     root = workspace_root or "."
     return [
         _bind_workspace(grep_tool, root),
+        _bind_workspace(read_file_tool, root),
         _bind_workspace(search_replace_tool, root),
+        _bind_workspace(write_file_tool, root),
         _bind_workspace(run_shell_tool, root),
     ]
 

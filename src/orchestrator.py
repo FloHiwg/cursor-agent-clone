@@ -2,9 +2,10 @@
 
 import os
 import time
+from pathlib import Path
 from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 
 from src.context_engine import context_engine_node
@@ -40,10 +41,15 @@ def build_plan_node(workspace_root: str):
         llm = _get_llm(model_tier).bind_tools(tools)
         snippets = state.get("context_snippets") or []
         context_blob = "\n\n".join(snippets[:10]) if snippets else "(no context)"
+        root = Path(workspace_root or ".").resolve()
+        workspace_files = sorted(str(f.relative_to(root)) for f in root.rglob("*") if f.is_file())
+        files_hint = ", ".join(workspace_files[:20]) if workspace_files else "none"
         system = (
-            "You are a coding agent in the Plan phase. You have context snippets from the codebase. "
-            "Use the tools: grep_tool (search files), search_replace_tool (edit a file), run_shell_tool (run commands, e.g. tests). "
-            "When done editing, run tests with run_shell_tool (e.g. pytest). Reply with tool_calls or a short summary."
+            "You are a coding agent. You MUST use tools to act; do not reply with only text when the user asks for an edit or change. "
+            "Files in this workspace (use these exact paths): " + files_hint + ". "
+            "To edit a file: first call read_file with that exact path, then call search_replace with the exact old_string and new_string from the file. "
+            "To create or overwrite a file use write_file. Use grep_tool to search, run_shell_tool to run commands (e.g. pytest). "
+            "When the user asks to change something in a file, you must call read_file then search_replace—never just describe the change in text."
         )
         messages = list(state.get("messages") or [])
         if not messages:
@@ -106,13 +112,38 @@ def build_observe_node():
     return observe_node
 
 
+def build_tools_node(workspace_root: str):
+    """Build a tools node that logs and updates edit_attempts/edit_applied from tool results."""
+    tool_node = get_tool_node(workspace_root)
+
+    def tools_node(state: AgentState) -> dict:
+        log_state_transition("tools", state)
+        result = tool_node.invoke(state)
+        attempts = state.get("edit_attempts") or 0
+        applied = state.get("edit_applied") or 0
+        for msg in result.get("messages") or []:
+            if isinstance(msg, ToolMessage) and isinstance(getattr(msg, "content", None), str):
+                content = msg.content
+                if "applied: patch" in content or "applied: file" in content:
+                    attempts += 1
+                    applied += 1
+                elif "attempted:" in content or content.strip().startswith("error:"):
+                    attempts += 1
+        result["edit_attempts"] = attempts
+        result["edit_applied"] = applied
+        return result
+
+    return tools_node
+
+
 def route_after_plan(state: AgentState) -> Literal["tools", "verify"]:
-    """Route from plan: tools if last message has tool_calls, else verify."""
+    """Route from plan: tools if last message has non-empty tool_calls, else verify."""
     messages = state.get("messages") or []
     if not messages:
         return "verify"
     last = messages[-1]
-    if isinstance(last, AIMessage) and getattr(last, "tool_calls", None):
+    tool_calls = getattr(last, "tool_calls", None) if isinstance(last, AIMessage) else None
+    if tool_calls and len(tool_calls) > 0:
         return "tools"
     return "verify"
 
@@ -131,7 +162,7 @@ def build_graph(workspace_root: str):
     builder.add_node("router", router_node)
     builder.add_node("context_engine", context_engine_node)
     builder.add_node("plan", build_plan_node(workspace_root))
-    builder.add_node("tools", get_tool_node(workspace_root))
+    builder.add_node("tools", build_tools_node(workspace_root))
     builder.add_node("verify", build_verify_node(workspace_root))
     builder.add_node("observe", build_observe_node())
 
