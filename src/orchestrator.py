@@ -24,7 +24,8 @@ def _get_llm(model_tier: Literal["high", "fast"]):
     """Return chat model: Gemini if GOOGLE_API_KEY is set, else OpenAI."""
     if os.environ.get("GOOGLE_API_KEY"):
         from langchain_google_genai import ChatGoogleGenerativeAI
-        model = "gemini-1.5-pro" if model_tier == "high" else "gemini-2.0-flash"
+        # Use Gemini 2.5 models (latest generation)
+        model = "gemini-2.5-pro" if model_tier == "high" else "gemini-2.5-flash"
         return ChatGoogleGenerativeAI(model=model, temperature=0)
     from langchain_openai import ChatOpenAI
     model = "gpt-4o" if model_tier == "high" else "gpt-4o-mini"
@@ -45,17 +46,37 @@ def build_plan_node(workspace_root: str):
         workspace_files = sorted(str(f.relative_to(root)) for f in root.rglob("*") if f.is_file())
         files_hint = ", ".join(workspace_files[:20]) if workspace_files else "none"
         system = (
-            "You are a coding agent. You MUST use tools to act; do not reply with only text when the user asks for an edit or change. "
-            "Files in this workspace (use these exact paths): " + files_hint + ". "
-            "To edit a file: first call read_file with that exact path, then call search_replace with the exact old_string and new_string from the file. "
-            "To create or overwrite a file use write_file. Use grep_tool to search, run_shell_tool to run commands (e.g. pytest). "
-            "When the user asks to change something in a file, you must call read_file then search_replace—never just describe the change in text."
+            "You are a coding agent that MUST use tools to complete tasks. NEVER respond with only text—ALWAYS call a tool.\n\n"
+            "CRITICAL: When the user asks you to create, edit, or modify anything, you MUST call the appropriate tool. "
+            "Do NOT describe what you would do—actually DO it by calling tools.\n\n"
+            "Available tools:\n"
+            "- write_file: Create new files or overwrite existing ones. Use this for creating new files.\n"
+            "- read_file: Read file contents before editing.\n"
+            "- search_replace: Edit existing files by replacing text.\n"
+            "- grep_tool: Search for text in files.\n"
+            "- run_shell_tool: Run shell commands (e.g., pytest).\n\n"
+            "Files in workspace: " + files_hint + "\n\n"
+            "To create a new file: Call write_file with file_path and content.\n"
+            "To edit a file: Call read_file first, then call search_replace.\n\n"
+            "IMPORTANT: You must call at least one tool. Text-only responses are not allowed."
         )
         messages = list(state.get("messages") or [])
         if not messages:
             messages = [HumanMessage(content=state.get("user_request") or "")]
+        
+        # If this is a retry (loop > 0) and no edits were made, add feedback
+        loop_count = state.get("loop_count") or 0
+        edit_attempts = state.get("edit_attempts") or 0
+        retry_hint = ""
+        if loop_count > 0 and edit_attempts == 0:
+            retry_hint = (
+                "\n\n**RETRY NOTICE**: Your previous response did not call any tools. "
+                "You MUST call a tool now to complete the task. Call write_file to create a file, "
+                "or read_file followed by search_replace to edit an existing file."
+            )
+        
         msgs = [
-            SystemMessage(content=f"{system}\n\nContext:\n{context_blob}"),
+            SystemMessage(content=f"{system}{retry_hint}\n\nContext:\n{context_blob}"),
             *messages,
         ]
         start = time.perf_counter()
@@ -102,11 +123,21 @@ def build_observe_node():
         loop_count = (state.get("loop_count") or 0) + 1
         verification = state.get("verification_result") or {}
         passed = verification.get("passed", False)
+        edit_attempts = state.get("edit_attempts") or 0
+        
+        # Don't consider done if no action was taken on first loop
+        # (LLM may have responded with text instead of tool calls)
+        no_action_taken = edit_attempts == 0 and loop_count == 1
+        should_continue = no_action_taken or (not passed and loop_count < MAX_LOOPS)
+        
         update = {
             "loop_count": loop_count,
-            "current_phase": "done" if (passed or loop_count >= MAX_LOOPS) else "plan",
+            "current_phase": "plan" if should_continue else "done",
         }
-        update.update(append_trajectory("observe", "decision", f"passed={passed} loop={loop_count}"))
+        detail = f"passed={passed} loop={loop_count} edits={edit_attempts}"
+        if no_action_taken:
+            detail += " (retrying: no action taken)"
+        update.update(append_trajectory("observe", "decision", detail))
         return update
 
     return observe_node
@@ -127,7 +158,7 @@ def build_tools_node(workspace_root: str):
                 if "applied: patch" in content or "applied: file" in content:
                     attempts += 1
                     applied += 1
-                elif "attempted:" in content or content.strip().startswith("error:"):
+                elif "attempted:" in content or content.strip().startswith("error:") or "rejected:" in content:
                     attempts += 1
         result["edit_attempts"] = attempts
         result["edit_applied"] = applied

@@ -17,6 +17,7 @@ def context_engine_node(state: AgentState) -> dict:
     total_chars = 0
     max_chars = 8000
     scored: list[tuple[int, str, str]] = []
+    
     for ext in ("*.py", "*.md", "*.txt"):
         for f in root.rglob(ext):
             if not f.is_file():
@@ -31,6 +32,7 @@ def context_engine_node(state: AgentState) -> dict:
                 excerpt = text[:500].replace("\n", " ")
                 scored.append((score, str(rel), excerpt))
     scored.sort(key=lambda x: -x[0])
+    
     for _, rel, excerpt in scored:
         if total_chars + len(excerpt) > max_chars:
             break

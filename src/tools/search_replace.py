@@ -4,6 +4,8 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
+from src.tools.diff_utils import ask_user_confirmation, generate_diff
+
 
 @tool
 def search_replace_tool(
@@ -34,6 +36,14 @@ def search_replace_tool(
         new_content = content.replace(old_string, new_string)
     else:
         new_content = content.replace(old_string, new_string, 1)
+
+    # Generate and display diff, ask for user confirmation
+    diff_output = generate_diff(content, new_content, file_path)
+    action_desc = f"Replace {'all occurrences' if replace_all else 'first occurrence'} in {file_path}"
+
+    if not ask_user_confirmation(diff_output, action_desc):
+        return "rejected: user declined the changes"
+
     try:
         full_path.write_text(new_content, encoding="utf-8")
     except Exception as e:
