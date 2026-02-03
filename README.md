@@ -1,85 +1,122 @@
 # Coding Agent PoC
 
-A proof-of-concept **agentic coding loop** (Plan → Act → Observe) built with [LangGraph](https://langchain-ai.github.io/langgraph/) > 1.0. It implements the architecture described in [SPECS.md](SPECS.md): Router, Context Engine, Tool Harness, and Sandbox, with mock tools that operate on a local workspace folder.
+A proof-of-concept **agentic coding loop** (Plan → Act → Observe) built with [LangGraph](https://langchain-ai.github.io/langgraph/). This implements a minimal but functional AI coding assistant that can read, write, and modify files in a workspace while asking for user confirmation before making changes.
 
-## How it works
+For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-1. **User** sends a request (e.g. “Fix the bug in the login auth flow”).
-2. **Router** chooses model tier (high-reasoning vs fast) from the request.
-3. **Context Engine** retrieves relevant snippets from the workspace (keyword match).
-4. **Plan** node: the LLM decides what to do and calls tools (grep, search_replace, run_shell).
-5. **Tools** run in the workspace (search, edit files, run commands).
-6. **Verify** runs tests in the sandbox (e.g. `pytest`).
-7. **Observe** checks the result and either loops back to Plan or ends.
+## Features
 
-Flow: **User → Router → Context Engine → Plan → (Tools → Plan)* → Verify → Observe → (Plan or END)**.
+- **Agentic Loop**: Plan → Act → Observe cycle with automatic retries
+- **Human-in-the-Loop**: Shows colorized diffs and asks for user confirmation before applying changes
+- **Multiple LLM Support**: Works with Google Gemini (default) or OpenAI GPT-4
+- **Tool Suite**: grep, read/write files, search-replace, shell commands
+- **Observability**: Rich console output with state transitions, trajectory tracking, and run summaries
 
-### Files
+## Quick Start
 
-| File | Role |
-|------|------|
-| [src/state.py](src/state.py) | Graph state schema and reducers |
-| [src/orchestrator.py](src/orchestrator.py) | Builds and compiles the LangGraph (Plan, Tools, Verify, Observe) |
-| [src/router.py](src/router.py) | Mock router: model selection |
-| [src/context_engine.py](src/context_engine.py) | Mock retrieval from workspace |
-| [src/tool_harness.py](src/tool_harness.py) | Tools + ToolNode bound to workspace |
-| [src/sandbox.py](src/sandbox.py) | Runs shell commands in workspace |
-| [src/tools/](src/tools/) | Mock tools: grep, search_replace, run_shell |
-| [src/logging_/](src/logging_/) | Trajectory, metrics, Rich visual logging |
-
-Mock tools operate under `workspace_path` (a folder in the project, default `./workspace`).
-
-## Setup
-
-### 1. Environment (uv)
-
-- Create a virtualenv and install dependencies with [uv](https://docs.astral.sh/uv/):
-
-  ```bash
-  uv venv
-  uv sync
-  ```
-
-- Run the app with:
-
-  ```bash
-  uv run main.py "Your request here"
-  ```
-
-  This uses the project’s `.venv` automatically.
-
-### 2. API keys
-
-- Copy the example env file and set at least one LLM key:
-
-  ```bash
-  cp env.example .env
-  ```
-
-- Edit `.env` and set:
-
-  - `GOOGLE_API_KEY=` — for Google Gemini (used by default).
-  - `OPENAI_API_KEY=` — optional fallback if Gemini is not set.
-
-The app loads `.env` via `python-dotenv` at startup.
-
-## Usage
+### 1. Install dependencies
 
 ```bash
-# Default request, workspace ./workspace
-uv run main.py
-
-# Custom request and workspace
-uv run main.py "Add a docstring to every function in the codebase" --workspace ./my_code
-
-# Limit graph steps
-uv run main.py "Run tests" --recursion-limit 10
+uv venv
+uv sync
 ```
 
-## Logging and observability
+### 2. Configure API keys
 
-- **State transitions**: each node logs current phase and loop count (Rich panels).
-- **Trajectory**: sequence of actions (plan, verify, observe) is stored in state and printed at the end.
-- **Summary**: edit attempts/applied, latency breakdown (model_ms, sandbox_ms), loop count, trajectory length.
+```bash
+cp env.example .env
+# Edit .env and set GOOGLE_API_KEY or OPENAI_API_KEY
+```
 
-These appear in the console during the run and in the final summary table.
+### 3. Run the agent
+
+```bash
+uv run main.py "Create a hello world Python script"
+```
+
+The agent will show you a diff of proposed changes and ask for confirmation before writing files.
+
+## Usage Examples
+
+```bash
+# Create a new file
+uv run main.py "Create a FastAPI endpoint that returns a greeting"
+
+# Modify existing code
+uv run main.py "Add error handling to the main function" --workspace ./my_project
+
+# Run with custom recursion limit
+uv run main.py "Refactor the database module" --recursion-limit 15
+```
+
+## How It Works
+
+```
+User Request
+     ↓
+┌─────────┐
+│ Router  │ → Selects model tier (high/fast)
+└────┬────┘
+     ↓
+┌─────────────────┐
+│ Context Engine  │ → Retrieves relevant code snippets
+└────────┬────────┘
+     ↓
+┌─────────┐     ┌─────────┐
+│  Plan   │ ←→  │  Tools  │ → Executes with user confirmation
+└────┬────┘     └─────────┘
+     ↓
+┌─────────┐
+│ Verify  │ → Runs tests (pytest)
+└────┬────┘
+     ↓
+┌─────────┐
+│ Observe │ → Continue or finish
+└────┬────┘
+     ↓
+  Result
+```
+
+## Project Structure
+
+```
+├── main.py                 # CLI entry point
+├── src/
+│   ├── orchestrator.py     # LangGraph state machine
+│   ├── state.py            # State schema (TypedDict)
+│   ├── router.py           # Model tier selection
+│   ├── context_engine.py   # Code snippet retrieval
+│   ├── tool_harness.py     # Tool binding and ToolNode
+│   ├── sandbox.py          # Shell command execution
+│   ├── tools/
+│   │   ├── read_file.py    # Read file contents
+│   │   ├── write_file.py   # Write files (with diff preview)
+│   │   ├── search_replace.py # Edit files (with diff preview)
+│   │   ├── grep.py         # Search file contents
+│   │   ├── shell.py        # Run shell commands
+│   │   └── diff_utils.py   # Diff generation and user confirmation
+│   └── logging_/
+│       ├── visual.py       # Rich console output
+│       └── trajectory.py   # Action sequence tracking
+└── workspace/              # Default working directory
+```
+
+## Configuration
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `GOOGLE_API_KEY` | Google Gemini API key (preferred) |
+| `OPENAI_API_KEY` | OpenAI API key (fallback) |
+
+## Observability
+
+The agent provides real-time feedback:
+
+- **State panels**: Shows current node, phase, and loop count
+- **Diff previews**: Colorized unified diffs before file changes
+- **Trajectory table**: Sequence of actions taken
+- **Run summary**: Edit accuracy, latency breakdown, total loops
+
+## License
+
+MIT
